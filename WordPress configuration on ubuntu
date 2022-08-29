@@ -1,0 +1,45 @@
+# installing the needed packages
+
+sudo apt-get update
+sudo apt-get upgrade
+sudo apt-get install ec2-instance-connect
+sudo apt-get install apache2
+sudo apt-get install mysql-server
+
+# configuring the database
+
+sudo mysql -u root
+create user "<your-username>"@"<your-host-ip>" identified by "<your-password>":
+grant all privileges on *.* to "<your-username>"@"<your-host-ip>" with grant option;
+flush privileges;
+create database <your-database-name>;
+show databases;
+
+# installing the php and testing it
+
+sudo apt-get install php php-mysqli
+php -v
+cd /var/www/html
+sudo vi info.php
+ {
+<?php
+	echo phpinfo()
+?>
+}
+
+# installing and configuring the wordpress using wget command ; then doing some changes in the /var/www/html directory
+
+cd /home
+sudo wget https://wordpress.org/latest.tar.gz
+ls -l 
+sudo tar xvf filename
+ls -l
+cd wordpress
+sudo cp -R . /var/www/html/
+sudo ls /var/www/html
+sudo rm /var/www/html/index.html
+sudo chown -R www-data:www-data /var/www/html/
+
+
+# The end ; at this stage you can connect to your wordpress blog , install some configuration , set your username and password 
+
