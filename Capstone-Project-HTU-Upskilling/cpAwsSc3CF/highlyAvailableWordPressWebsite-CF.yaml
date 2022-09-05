@@ -1,0 +1,447 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: 'The template of the third scenario in the capstone project of the AWS training , created by Hamza Louis'
+
+# parameters needed in order to create the ASG******************************************************************************************
+
+Parameters:
+  LatestAmiId:
+    Description: Region specific image from the Parameter Store
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Default: '/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2'
+  InstanceType:
+    Description: Amazon EC2 instance type for the instances
+    Type: String
+    AllowedValues:
+      - t3.micro
+      - t2.micro
+    Default: t2.micro
+  
+  LaunchTemplateVersionNumber:
+    Default: 1
+    Type: String
+
+  
+
+Resources: 
+
+# First of all , we need to create the VPC for our application **************************************************************************
+
+  ICTC8AWSVPC:
+      Type: AWS::EC2::VPC
+      Properties: 
+       CidrBlock: 10.0.0.0/16
+       Tags:
+        - Key: "Name"
+          Value: "ICTC8AWS-VPN"
+
+# here we defined two public subnets in two different AZ's for WordPress usage  ********************************************************** 
+
+  WordPressPubSubAZ1:
+      Type: AWS::EC2::Subnet
+      Properties:
+       AvailabilityZone: "us-east-1a" 
+       VpcId:
+          Ref: ICTC8AWSVPC
+       CidrBlock: 10.0.1.0/24
+       MapPublicIpOnLaunch: true
+       Tags:
+         - Key: "Name"
+           Value: "WordPressPubSubAZ1" 
+
+  WordPressPubSubAZ2:
+      Type: AWS::EC2::Subnet
+      Properties:
+       AvailabilityZone: "us-east-1b" 
+       VpcId:
+          Ref: ICTC8AWSVPC
+       CidrBlock: 10.0.2.0/24
+       MapPublicIpOnLaunch: true
+       Tags:
+         - Key: "Name"
+           Value: "WordPressPubSubAZ2" 
+
+# here we defined two prvate subnets in two different AZ's for database usage ************************************************************          
+
+  RDSMasterPriSubAZ1:
+      Type: AWS::EC2::Subnet
+      Properties:
+       AvailabilityZone: "us-east-1a" 
+       VpcId:
+          Ref: ICTC8AWSVPC
+       CidrBlock: 10.0.8.0/24
+       MapPublicIpOnLaunch: false
+       Tags:
+         - Key: "Name"
+           Value: "RDSMasterPriSubAZ1" 
+
+  RDSReplicaPriSubAZ2:
+      Type: AWS::EC2::Subnet
+      Properties:
+       AvailabilityZone: "us-east-1b" 
+       VpcId:
+          Ref: ICTC8AWSVPC
+       CidrBlock: 10.0.9.0/24
+       MapPublicIpOnLaunch: false
+       Tags:
+         - Key: "Name"
+           Value: "RDSReplicaPriSubAZ2"         
+
+
+# creating the internet gateway then attaching it to our VPC ********************************************************************************
+  
+  InternetGateway:
+      Type: AWS::EC2::InternetGateway
+      Properties:
+       Tags: 
+        - Key: "Name"
+          Value: "ICTC8AWSgw"
+
+  InternetGatewayAttachment:
+      Type: AWS::EC2::VPCGatewayAttachment
+      Properties:
+        InternetGatewayId: !Ref InternetGateway
+        VpcId: !Ref ICTC8AWSVPC   
+
+
+#  creating the route table + the public route + the association ****************************************************************************
+
+  PublicRouteTableWordPress:
+     Type: AWS::EC2::RouteTable
+     Properties:
+      VpcId: !Ref ICTC8AWSVPC
+      Tags:
+        - Key: "Name"
+          Value: "PublicRouteTableWordPress"
+
+  DefaultPublicRoute:
+     Type: AWS::EC2::Route
+     DependsOn: InternetGatewayAttachment
+     Properties:
+       RouteTableId: !Ref PublicRouteTableWordPress
+       DestinationCidrBlock: 0.0.0.0/0
+       GatewayId: !Ref InternetGateway
+
+  PublicSubnetAZ1RouteTableAssociation:
+     Type: AWS::EC2::SubnetRouteTableAssociation
+     Properties:
+      RouteTableId: !Ref PublicRouteTableWordPress
+      SubnetId: !Ref WordPressPubSubAZ1 
+
+  PublicSubnetAZ2RouteTableAssociation:
+     Type: AWS::EC2::SubnetRouteTableAssociation
+     Properties:
+      RouteTableId: !Ref PublicRouteTableWordPress
+      SubnetId: !Ref WordPressPubSubAZ2     
+
+
+# creating the ec2 instance and its dependencies ******************************************************************************************
+
+  WordPressSecurityGroup:
+     Type: AWS::EC2::SecurityGroup
+     Properties:
+       GroupDescription: Enable HTTP from 0.0.0.0/0
+       SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '80'
+          ToPort: '80'
+          CidrIp: 0.0.0.0/0
+       VpcId: !Ref ICTC8AWSVPC
+
+
+  ICTC8AWSMasterEC2:
+     Type: AWS::EC2::Instance
+     Properties:
+       InstanceType: t2.micro
+       SubnetId: !Ref WordPressPubSubAZ1
+       AvailabilityZone: "us-east-1a"
+       ImageId: ami-090fa75af13c156b4
+       SecurityGroupIds: 
+        - !Ref WordPressSecurityGroup
+       Tags:
+        - Key: "Name"
+          Value: "ICTC8AWSMasterEC2"
+       UserData:
+          Fn::Base64:
+            !Sub |
+              #!/bin/bash
+              sudo yum update -y
+              sudo amazon-linux-extras install -y lamp-mariadb10.2-php7.2 php7.2
+              sudo yum install -y httpd mariadb-server
+              sudo systemctl start httpd
+              sudo systemctl enable httpd
+              sudo usermod -a -G apache ec2-user
+              sudo chown -R ec2-user:apache /var/www
+              sudo chmod 2775 /var/www && find /var/www -type d -exec sudo chmod 2775 {} \;
+              find /var/www -type f -exec sudo chmod 0664 {} \;
+              sudo systemctl start mariadb
+              sudo systemctl enable mariadb
+              sudo wget https://wordpress.org/latest.tar.gz
+              sudo tar -xzf latest.tar.gz
+              sudo cp wordpress/wp-config-sample.php wordpress/wp-config.php
+              sudo cp -r wordpress/* /var/www/html/
+              sudo mkdir /var/www/html/blog
+              sudo cp -r wordpress/* /var/www/html/blog/
+              sudo yum install php-gd
+
+
+#some configuration need to be done manually like the sudo mysql_secure_installation inside the mysql server. here in the user data we have installed the LAMP 
+#as a prerequisites for the WordPress installation.                 
+#also all configuration for the maria db after the command mysql -u root -p you need to do it manually
+#you need to pass the database configuration in the file nano wordpress/wp-config.php
+#in this file Find the section that starts with <Directory "/var/www/html">. you need to change the AllowOverride None line in the above section to read AllowOverride All.
+
+# creating the auto scaling group for the Web Servers ************************************************************************************
+
+  NewKeyPair:
+    Type: 'AWS::EC2::KeyPair'
+    Properties:
+      KeyName: MyKeyPair
+
+  LaunchTemplate:
+    Type: 'AWS::EC2::LaunchTemplate'
+    Properties:
+      LaunchTemplateName: !Sub '${AWS::StackName}-launch-template-for-auto-scaling'
+      LaunchTemplateData:
+        NetworkInterfaces:
+          - DeviceIndex: 0
+            AssociatePublicIpAddress: true
+            Groups:
+              - !Ref WordPressSecurityGroup
+            DeleteOnTermination: true
+        Placement:
+          Tenancy: default
+        ImageId: ami-0022f774911c1d690
+        KeyName: !Ref NewKeyPair
+        InstanceType: t2.micro
+        UserData:
+          Fn::Base64:
+            !Sub |
+              #!/bin/bash
+              sudo yum update -y
+              sudo yum install httpd -y
+              sudo systemctl start httpd
+              sudo systemctl enable httpd
+# here in the launch template only the apache had been configured so you are able to connect to it through the HTTP
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      MinSize: '1'
+      MaxSize: '5'
+      DesiredCapacity: '1'
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LaunchTemplate
+        Version: !Ref LaunchTemplateVersionNumber
+      VPCZoneIdentifier:
+        - !Ref WordPressPubSubAZ1
+        - !Ref WordPressPubSubAZ2
+      Tags:
+        - Key: "Name"
+          PropagateAtLaunch: true
+          Value: "WebServerASG"  
+
+
+# creating the load balancer and the target group *******************************************************************************************
+
+  ALBSecurityGroup:
+        Type: "AWS::EC2::SecurityGroup"
+        Properties:
+            GroupDescription: "security group for ALB"
+            GroupName: "test-ALB-SG"
+            Tags: 
+              
+              - 
+                Key: "createdBy"
+                Value: "your-name"
+              - 
+                Key: "Environment"
+                Value: "test"
+              - 
+                Key: "Name"
+                Value: "test-ALB-SG"
+                
+            VpcId: !Ref ICTC8AWSVPC
+            SecurityGroupIngress: 
+              - 
+                CidrIp: "0.0.0.0/0"
+                FromPort: 80
+                IpProtocol: "tcp"
+                ToPort: 80
+              - 
+                CidrIp: "0.0.0.0/0"
+                FromPort: 443
+                IpProtocol: "tcp"
+                ToPort: 443
+
+  ApplicationLoadBalancer:
+        Type: "AWS::ElasticLoadBalancingV2::LoadBalancer"
+        Properties:
+            Name: "test-Application-Load-Balancer"
+            Scheme: "internet-facing"
+            Type: "application"
+            Subnets: 
+              - !Ref WordPressPubSubAZ1
+              - !Ref WordPressPubSubAZ2
+            SecurityGroups: 
+              - !Ref ALBSecurityGroup
+            IpAddressType: "ipv4"
+            LoadBalancerAttributes: 
+              - 
+                Key: "access_logs.s3.enabled"
+                Value: "false"
+              - 
+                Key: "idle_timeout.timeout_seconds"
+                Value: "60"
+              - 
+                Key: "deletion_protection.enabled"
+                Value: "false"
+              - 
+                Key: "routing.http2.enabled"
+                Value: "true"
+              - 
+                Key: "routing.http.drop_invalid_header_fields.enabled"
+                Value: "false"  
+
+
+
+  HTTPListener:
+        Type: "AWS::ElasticLoadBalancingV2::Listener"
+        Properties:
+            LoadBalancerArn: !Ref ApplicationLoadBalancer
+            Port: 80
+            Protocol: "HTTP"
+            DefaultActions: 
+              - 
+                Order: 1
+                RedirectConfig: 
+                    Protocol: "HTTPS"
+                    Port: "443"
+                    Host: "#{host}"
+                    Path: "/#{path}"
+                    Query: "#{query}"
+                    StatusCode: "HTTP_301"
+                Type: "redirect" 
+                                         
+  Test1TargetGroup:
+        Type: "AWS::ElasticLoadBalancingV2::TargetGroup"
+        Properties:
+            HealthCheckIntervalSeconds: 30
+            HealthCheckPath: "/"
+            Port: 80
+            Protocol: "HTTP"
+            HealthCheckPort: "traffic-port"
+            HealthCheckProtocol: "HTTP"
+            HealthCheckTimeoutSeconds: 5
+            UnhealthyThresholdCount: 2
+            TargetType: "instance"
+            Matcher: 
+                HttpCode: "200"
+            HealthyThresholdCount: 5
+            VpcId: !Ref ICTC8AWSVPC
+            Name: "target-group-1"
+            HealthCheckEnabled: true
+            TargetGroupAttributes: 
+              - 
+                Key: "stickiness.enabled"
+                Value: "false"
+              - 
+                Key: "deregistration_delay.timeout_seconds"
+                Value: "300"
+              - 
+                Key: "stickiness.type"
+                Value: "lb_cookie"
+              - 
+                Key: "stickiness.lb_cookie.duration_seconds"
+                Value: "86400"
+              - 
+                Key: "slow_start.duration_seconds"
+                Value: "0"
+              - 
+                Key: "load_balancing.algorithm.type"
+                Value: "round_robin"
+
+
+
+# creating the rds instance + read replica *************************************************************************************************
+
+
+  MysqlDBPriSub:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBName: "MysqlDBPriSub"
+      MasterUsername: "your-username"
+      MasterUserPassword: "your-password"
+      Engine: Mysql
+      DBInstanceClass: db.t2.micro
+      StorageType: gp2
+      PubliclyAccessible: false
+      AllocatedStorage: "20"
+      MultiAZ: true
+      Port: 3306
+      DBSubnetGroupName: !Ref MysqlDBPriSubnetGroup
+  
+  MysqlDBPriSubnetGroup:
+    Type: "AWS::RDS::DBSubnetGroup" 
+    Properties: 
+      DBSubnetGroupDescription: "Subnet group for the RDS instance"
+      SubnetIds: 
+        - !Ref RDSMasterPriSubAZ1
+        - !Ref RDSReplicaPriSubAZ2
+      Tags: 
+        - 
+          Key: "Name"
+          Value: "MysqlDBPriSubnetGroup"
+
+# creating the needed S3 buckets 
+
+
+  s3WordPressMediaAssets:
+    DeletionPolicy: Retain
+    Type: 'AWS::S3::Bucket'
+    Description: Creating Amazon S3 bucket for the WordPress themes and other madia
+    Properties:
+      AccessControl: Private
+      BucketName: "s3word-press-media-assets"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+
+      Tags:
+       - Key: Name
+         Value: "s3word-press-media-assets"
+
+  s3WordPressSharedCode:
+    DeletionPolicy: Retain
+    Type: 'AWS::S3::Bucket'
+    Description: Creating Amazon S3 bucket for the WordPress code to be shared between the nodes
+    Properties:
+      AccessControl: Private
+      BucketName: "s3word-press-shared-code"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+
+      Tags:
+       - Key: Name
+         Value: "s3word-press-shared-code"       
+
+
+
+
+
+               
